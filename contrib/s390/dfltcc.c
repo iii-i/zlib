@@ -3,8 +3,8 @@
 /*
    Use the following commands to build zlib with DFLTCC support:
 
-        $ CFLAGS=-DDFLTCC ./configure
-        $ make OBJA=dfltcc.o PIC_OBJA=dfltcc.lo
+        $ ./configure --dfltcc
+        $ make
 */
 
 #define _GNU_SOURCE
@@ -196,6 +196,10 @@ struct dfltcc_param_v0 {
 static_assert(sizeof(struct dfltcc_param_v0) == 1536,
               sizeof_struct_dfltcc_param_v0_is_1536);
 
+/* Don't spend cycles zeroing out cdht and csb */
+#define DFLTCC_PARAM_V0_BZERO_SIZE \
+        ((size_t)&(((struct dfltcc_param_v0 *)0)->cdht))
+
 local z_const char *oesc_msg OF((char *buf, int oesc));
 local z_const char *oesc_msg(buf, oesc)
     char *buf;
@@ -221,6 +225,8 @@ struct dfltcc_state {
     uLong dht_threshold;               /* New block only if avail_in >= X */
     char msg[64];                      /* Buffer for strm->msg */
 };
+
+#define DFLTCC_PARAM_BZERO_SIZE DFLTCC_PARAM_V0_BZERO_SIZE
 
 #define ALIGN_UP(p, size) \
         (__typeof__(p))(((uintptr_t)(p) + ((size) - 1)) & ~((size) - 1))
@@ -643,28 +649,75 @@ int ZLIB_INTERNAL dfltcc_inflate_disable(strm)
     return 0;
 }
 
-/*
-   Memory management.
+local int env_dfltcc_disabled;
+local int env_source_date_epoch;
+local unsigned long env_level_mask;
+local unsigned long env_block_size;
+local unsigned long env_block_threshold;
+local unsigned long env_dht_threshold;
+local unsigned long env_ribm;
+local uint64_t cpu_facilities[(DFLTCC_FACILITY / 64) + 1];
+local struct dfltcc_qaf_param cpu_af __attribute__((aligned(8)));
 
-   DFLTCC requires parameter blocks and window to be aligned. zlib allows
-   users to specify their own allocation functions, so using e.g.
-   `posix_memalign' is not an option. Thus, we overallocate and take the
-   aligned portion of the buffer.
-*/
 local inline int is_dfltcc_enabled OF((void));
 local inline int is_dfltcc_enabled(void)
 {
-    const char *env;
-    uint64_t facilities[(DFLTCC_FACILITY / 64) + 1];
-    register char r0 __asm__("r0");
-
-    env = secure_getenv("DFLTCC");
-    if (env && !strcmp(env, "0"))
+    if (env_dfltcc_disabled)
       /* User has explicitly disabled DFLTCC. */
       return 0;
 
-    memset(facilities, 0, sizeof(facilities));
-    r0 = sizeof(facilities) / sizeof(facilities[0]) - 1;
+    return is_bit_set((const char *)cpu_facilities, DFLTCC_FACILITY);
+}
+
+__attribute__((constructor)) local void init_globals OF((void));
+__attribute__((constructor)) local void init_globals(void)
+{
+    const char *env;
+    register char r0 __asm__("r0");
+
+    env = secure_getenv("DFLTCC");
+    env_dfltcc_disabled = env && !strcmp(env, "0");
+
+    env = secure_getenv("SOURCE_DATE_EPOCH");
+    env_source_date_epoch = !!env;
+
+#ifndef DFLTCC_LEVEL_MASK
+#define DFLTCC_LEVEL_MASK 0x2
+#endif
+    env = secure_getenv("DFLTCC_LEVEL_MASK");
+    env_level_mask = (env && *env) ? strtoul(env, NULL, 0) :
+                                     DFLTCC_LEVEL_MASK;
+
+#ifndef DFLTCC_BLOCK_SIZE
+#define DFLTCC_BLOCK_SIZE 1048576
+#endif
+    env = secure_getenv("DFLTCC_BLOCK_SIZE");
+    env_block_size = (env && *env) ? strtoul(env, NULL, 0) :
+                                     DFLTCC_BLOCK_SIZE;
+
+#ifndef DFLTCC_FIRST_FHT_BLOCK_SIZE
+#define DFLTCC_FIRST_FHT_BLOCK_SIZE 4096
+#endif
+    env = secure_getenv("DFLTCC_FIRST_FHT_BLOCK_SIZE");
+    env_block_threshold = (env && *env) ? strtoul(env, NULL, 0) :
+                                          DFLTCC_FIRST_FHT_BLOCK_SIZE;
+
+#ifndef DFLTCC_DHT_MIN_SAMPLE_SIZE
+#define DFLTCC_DHT_MIN_SAMPLE_SIZE 4096
+#endif
+    env = secure_getenv("DFLTCC_DHT_MIN_SAMPLE_SIZE");
+    env_dht_threshold = (env && *env) ? strtoul(env, NULL, 0) :
+                                        DFLTCC_DHT_MIN_SAMPLE_SIZE;
+
+#ifndef DFLTCC_RIBM
+#define DFLTCC_RIBM 0
+#endif
+    env = secure_getenv("DFLTCC_RIBM");
+    env_ribm = (env && *env) ? strtoul(env, NULL, 0) :
+                               DFLTCC_RIBM;
+
+    memset(cpu_facilities, 0, sizeof(cpu_facilities));
+    r0 = sizeof(cpu_facilities) / sizeof(cpu_facilities[0]) - 1;
     /* STFLE is supported since z9-109 and only in z/Architecture mode. When
      * compiling with -m31, gcc defaults to ESA mode, however, since the kernel
      * is 64-bit, it's always z/Architecture mode at runtime.
@@ -673,71 +726,51 @@ local inline int is_dfltcc_enabled(void)
                      ".machinemode zarch\n"
                      "stfle %[facilities]\n"
                      ".machinemode pop\n"
-                     : [facilities] "=Q" (facilities)
+                     : [facilities] "=Q" (cpu_facilities)
                      , [r0] "+r" (r0)
                      :
                      : "cc");
-    return is_bit_set((const char *)facilities, DFLTCC_FACILITY);
+
+    /* Initialize available functions */
+    if (is_dfltcc_enabled())
+        dfltcc(DFLTCC_QAF, &cpu_af, NULL, NULL, NULL, NULL, NULL);
+    else
+        memset(&cpu_af, 0, sizeof(cpu_af));
 }
 
+/*
+   Memory management.
+
+   DFLTCC requires parameter blocks and window to be aligned. zlib allows
+   users to specify their own allocation functions, so using e.g.
+   `posix_memalign' is not an option. Thus, we overallocate and take the
+   aligned portion of the buffer.
+*/
 void ZLIB_INTERNAL dfltcc_reset(strm, size)
     z_streamp strm;
     uInt size;
 {
     struct dfltcc_state *dfltcc_state =
         (struct dfltcc_state *)((char FAR *)strm->state + ALIGN_UP(size, 8));
-    struct dfltcc_qaf_param *param =
-        (struct dfltcc_qaf_param *)&dfltcc_state->param;
-    const char *s;
 
-    /* Initialize available functions */
-    if (is_dfltcc_enabled()) {
-        dfltcc(DFLTCC_QAF, param, NULL, NULL, NULL, NULL, NULL);
-        memmove(&dfltcc_state->af, param, sizeof(dfltcc_state->af));
-    } else
-        memset(&dfltcc_state->af, 0, sizeof(dfltcc_state->af));
+    memcpy(&dfltcc_state->af, &cpu_af, sizeof(dfltcc_state->af));
 
-    if (secure_getenv("SOURCE_DATE_EPOCH"))
+    if (env_source_date_epoch)
         /* User needs reproducible results, but the output of DFLTCC_CMPR
          * depends on buffers' page offsets.
          */
         clear_bit(dfltcc_state->af.fns, DFLTCC_CMPR);
 
     /* Initialize parameter block */
-    memset(&dfltcc_state->param, 0, sizeof(dfltcc_state->param));
+    memset(&dfltcc_state->param, 0, DFLTCC_PARAM_BZERO_SIZE);
     dfltcc_state->param.nt = 1;
 
     /* Initialize tuning parameters */
-#ifndef DFLTCC_LEVEL_MASK
-#define DFLTCC_LEVEL_MASK 0x2
-#endif
-    s = secure_getenv("DFLTCC_LEVEL_MASK");
-    dfltcc_state->level_mask = (s && *s) ? strtoul(s, NULL, 0) :
-                                           DFLTCC_LEVEL_MASK;
-#ifndef DFLTCC_BLOCK_SIZE
-#define DFLTCC_BLOCK_SIZE 1048576
-#endif
-    s = secure_getenv("DFLTCC_BLOCK_SIZE");
-    dfltcc_state->block_size = (s && *s) ? strtoul(s, NULL, 0) :
-                                           DFLTCC_BLOCK_SIZE;
-#ifndef DFLTCC_FIRST_FHT_BLOCK_SIZE
-#define DFLTCC_FIRST_FHT_BLOCK_SIZE 4096
-#endif
-    s = secure_getenv("DFLTCC_FIRST_FHT_BLOCK_SIZE");
-    dfltcc_state->block_threshold = (s && *s) ? strtoul(s, NULL, 0) :
-                                                DFLTCC_FIRST_FHT_BLOCK_SIZE;
-#ifndef DFLTCC_DHT_MIN_SAMPLE_SIZE
-#define DFLTCC_DHT_MIN_SAMPLE_SIZE 4096
-#endif
-    s = secure_getenv("DFLTCC_DHT_MIN_SAMPLE_SIZE");
-    dfltcc_state->dht_threshold = (s && *s) ? strtoul(s, NULL, 0) :
-                                              DFLTCC_DHT_MIN_SAMPLE_SIZE;
-#ifndef DFLTCC_RIBM
-#define DFLTCC_RIBM 0
-#endif
-    s = secure_getenv("DFLTCC_RIBM");
-    dfltcc_state->param.ribm = (s && *s) ? strtoul(s, NULL, 0) :
-                                           DFLTCC_RIBM;
+    dfltcc_state->level_mask = env_level_mask;
+    dfltcc_state->block_size = env_block_size;
+    dfltcc_state->block_threshold = env_block_threshold;
+    dfltcc_state->dht_threshold = env_dht_threshold;
+    dfltcc_state->param.ribm = env_ribm;
 }
 
 voidpf ZLIB_INTERNAL dfltcc_alloc_state(strm, items, size)

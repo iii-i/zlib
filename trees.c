@@ -136,7 +136,6 @@ local const static_tree_desc  static_bl_desc =
  */
 
 local void tr_static_init OF((void));
-local void init_block     OF((deflate_state *s));
 local void pqdownheap     OF((deflate_state *s, ct_data *tree, int k));
 local void gen_bitlen     OF((deflate_state *s, tree_desc *desc));
 local void gen_codes      OF((ct_data *tree, int max_code, ushf *bl_count));
@@ -403,16 +402,18 @@ void ZLIB_INTERNAL _tr_init(s)
 #endif
 
     /* Initialize the first block of the first file: */
-    init_block(s);
+    s->need_init_block = 1;
 }
 
 /* ===========================================================================
  * Initialize a new block.
  */
-local void init_block(s)
+void ZLIB_INTERNAL init_block(s)
     deflate_state *s;
 {
     int n; /* iterates over tree elements */
+
+    s->need_init_block = 0;
 
     /* Initialize the trees. */
     for (n = 0; n < L_CODES;  n++) s->dyn_ltree[n].Freq = 0;

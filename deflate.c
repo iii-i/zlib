@@ -113,6 +113,9 @@ local  void check_match OF((deflate_state *s, IPos start, IPos match,
                             int length));
 #endif
 
+local void clear_hash_lazy OF((deflate_state *s));
+local void init_block_lazy OF((deflate_state *s));
+
 /* ===========================================================================
  * Local data
  */
@@ -207,7 +210,16 @@ local const config configuration_table[10] = {
         s->head[s->hash_size-1] = NIL; \
         zmemzero((Bytef *)s->head, \
                  (unsigned)(s->hash_size-1)*sizeof(*s->head)); \
+        s->need_clear_hash = 0; \
     } while (0)
+
+/* ========================================================================= */
+local inline void clear_hash_lazy(s)
+    deflate_state *s;
+{
+    if (s->need_clear_hash)
+        CLEAR_HASH(s);
+}
 
 /* ===========================================================================
  * Slide the hash table when sliding the window down (could be avoided with 32
@@ -220,6 +232,8 @@ local void slide_hash(s)
     unsigned n, m;
     Posf *p;
     uInt wsize = s->w_size;
+
+    clear_hash_lazy(s);
 
     n = s->hash_size;
     p = &s->head[n];
@@ -397,6 +411,9 @@ int ZEXPORT deflateInit2_(strm, level, method, windowBits, memLevel, strategy,
     s->strategy = strategy;
     s->method = (Byte)method;
 
+    s->need_init_block = 0;
+    s->need_clear_hash = 0;
+
     return deflateReset(strm);
 }
 
@@ -461,6 +478,8 @@ int ZEXPORT deflateSetDictionary (strm, dictionary, dictLength)
         dictionary += dictLength - s->w_size;  /* use the tail */
         dictLength = s->w_size;
     }
+
+    clear_hash_lazy(s);
 
     /* insert dictionary into window and hash */
     avail = strm->avail_in;
@@ -623,6 +642,14 @@ int ZEXPORT deflatePrime (strm, bits, value)
 }
 
 /* ========================================================================= */
+local inline void init_block_lazy(s)
+    deflate_state *s;
+{
+    if (s->need_init_block)
+        init_block(s);
+}
+
+/* ========================================================================= */
 int ZEXPORT deflateParams(strm, level, strategy)
     z_streamp strm;
     int level;
@@ -655,7 +682,7 @@ int ZEXPORT deflateParams(strm, level, strategy)
             return Z_BUF_ERROR;
     }
     if (s->level != level) {
-        if (s->level == 0 && s->matches != 0) {
+        if (s->level == 0 && (init_block_lazy(s), s->matches) != 0) {
             if (s->matches == 1)
                 slide_hash(s);
             else
@@ -1258,7 +1285,7 @@ local void lm_init (s)
 {
     s->window_size = (ulg)2L*s->w_size;
 
-    CLEAR_HASH(s);
+    s->need_clear_hash = 1;
 
     /* Set the default configuration parameters:
      */
@@ -1550,6 +1577,8 @@ local void fill_window(s)
 
     Assert(s->lookahead < MIN_LOOKAHEAD, "already enough lookahead");
 
+    clear_hash_lazy(s);
+
     do {
         more = (unsigned)(s->window_size -(ulg)s->lookahead -(ulg)s->strstart);
 
@@ -1708,6 +1737,8 @@ local block_state deflate_stored(s, flush)
     deflate_state *s;
     int flush;
 {
+    init_block_lazy(s);
+
     /* Smallest worthy block size when not flushing or finishing. By default
      * this is 32K. This can be as small as 507 bytes for memLevel == 1. For
      * large input and output buffers, the stored block size will be larger.
@@ -1898,6 +1929,9 @@ local block_state deflate_fast(s, flush)
     IPos hash_head;       /* head of the hash chain */
     int bflush;           /* set if current block must be flushed */
 
+    init_block_lazy(s);
+    clear_hash_lazy(s);
+
     for (;;) {
         /* Make sure that we always have enough lookahead, except
          * at the end of the input file. We need MAX_MATCH bytes
@@ -1999,6 +2033,9 @@ local block_state deflate_slow(s, flush)
 {
     IPos hash_head;          /* head of hash chain */
     int bflush;              /* set if current block must be flushed */
+
+    init_block_lazy(s);
+    clear_hash_lazy(s);
 
     /* Process the input block. */
     for (;;) {
@@ -2132,6 +2169,8 @@ local block_state deflate_rle(s, flush)
     uInt prev;              /* byte at distance one to match */
     Bytef *scan, *strend;   /* scan goes up to strend for length of run */
 
+    init_block_lazy(s);
+
     for (;;) {
         /* Make sure that we always have enough lookahead, except
          * at the end of the input file. We need MAX_MATCH bytes
@@ -2202,6 +2241,8 @@ local block_state deflate_huff(s, flush)
     int flush;
 {
     int bflush;             /* set if current block must be flushed */
+
+    init_block_lazy(s);
 
     for (;;) {
         /* Make sure that we have a literal to write. */

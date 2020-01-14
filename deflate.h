@@ -268,6 +268,11 @@ typedef struct internal_state {
      * updated to the new high water mark.
      */
 
+    int need_init_block;
+    /* Whether init_block needs to be called lazily */
+
+    int need_clear_hash;
+    /* Whether CLEAR_HASH needs to be called lazily */
 } FAR deflate_state;
 
 /* Output a byte on the stream.
@@ -354,5 +359,6 @@ typedef enum {
 unsigned ZLIB_INTERNAL bi_reverse OF((unsigned code, int len));
 void ZLIB_INTERNAL bi_windup OF((deflate_state *s));
 void ZLIB_INTERNAL flush_pending OF((z_streamp strm));
+void ZLIB_INTERNAL init_block OF((deflate_state *s));
 
 #endif /* DEFLATE_H */
