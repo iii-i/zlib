@@ -350,22 +350,24 @@ again:
     soft_bcc = 0;
     no_flush = flush == Z_NO_FLUSH;
 
-    /* Trailing empty block. Switch to software, except when Continuation Flag
-     * is set, which means that DFLTCC has buffered some output in the
-     * parameter block and needs to be called again in order to flush it.
+    /* No input data. Return, except when Continuation Flag is set, which means
+     * that DFLTCC has buffered some output in the parameter block and needs to
+     * be called again in order to flush it.
      */
-    if (flush == Z_FINISH && strm->avail_in == 0 && !param->cf) {
-        if (param->bcf) {
-            /* A block is still open, and the hardware does not support closing
-             * blocks without adding data. Thus, close it manually.
-             */
+    if (strm->avail_in == 0 && !param->cf) {
+        /* A block is still open, and the hardware does not support closing
+         * blocks without adding data. Thus, close it manually.
+         */
+        if (!no_flush && param->bcf) {
             send_eobs(strm, param);
             param->bcf = 0;
         }
-        return 0;
-    }
-
-    if (strm->avail_in == 0 && !param->cf) {
+        /* Let one of deflate_* functions write a trailing empty block. */
+        if (flush == Z_FINISH)
+            return 0;
+        /* Clear history. */
+        if (flush == Z_FULL_FLUSH)
+            param->hl = 0;
         *result = need_more;
         return 1;
     }
@@ -419,7 +421,7 @@ again:
     param->cvt = state->wrap == 2 ? CVT_CRC32 : CVT_ADLER32;
     if (!no_flush)
         /* We need to close a block. Always do this in software - when there is
-         * no input data, the hardware will not nohor BCC. */
+         * no input data, the hardware will not honor BCC. */
         soft_bcc = 1;
     if (flush == Z_FINISH && !param->bcf)
         /* We are about to open a BFINAL block, set Block Header Final bit
@@ -434,8 +436,8 @@ again:
     param->sbb = (unsigned int)state->bi_valid;
     if (param->sbb > 0)
         *strm->next_out = (Bytef)state->bi_buf;
-    if (param->hl)
-        param->nt = 0; /* Honor history */
+    /* Honor history and check value */
+    param->nt = 0;
     param->cv = state->wrap == 2 ? ZSWAP32(strm->adler) : strm->adler;
 
     /* When opening a block, choose a Huffman-Table Type */
@@ -795,10 +797,11 @@ void ZLIB_INTERNAL dfltcc_free_window(strm, w)
    fly with deflateParams, we need to convert between hardware and software
    window formats.
 */
-int ZLIB_INTERNAL dfltcc_deflate_params(strm, level, strategy)
+int ZLIB_INTERNAL dfltcc_deflate_params(strm, level, strategy, flush)
     z_streamp strm;
     int level;
     int strategy;
+    int *flush;
 {
     deflate_state FAR *state = (deflate_state FAR *)strm->state;
     struct dfltcc_state FAR *dfltcc_state = GET_DFLTCC_STATE(state);
@@ -815,8 +818,11 @@ int ZLIB_INTERNAL dfltcc_deflate_params(strm, level, strategy)
         /* DFLTCC was not used yet - no changes needed */
         return Z_OK;
 
-    /* Switching between hardware and software is not implemented */
-    return Z_STREAM_ERROR;
+    /* For now, do not convert between window formats - simply get rid of the
+     * old data instead.
+     */
+    *flush = Z_FULL_FLUSH;
+    return Z_OK;
 }
 
 /*

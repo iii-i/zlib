@@ -630,6 +630,7 @@ int ZEXPORT deflateParams(strm, level, strategy)
 {
     deflate_state *s;
     compress_func func;
+    int hook_flush = Z_NO_FLUSH;
 
     if (deflateStateCheck(strm)) return Z_STREAM_ERROR;
     s = strm->state;
@@ -642,13 +643,14 @@ int ZEXPORT deflateParams(strm, level, strategy)
     if (level < 0 || level > 9 || strategy < 0 || strategy > Z_FIXED) {
         return Z_STREAM_ERROR;
     }
-    DEFLATE_PARAMS_HOOK(strm, level, strategy);
+    DEFLATE_PARAMS_HOOK(strm, level, strategy, &hook_flush);
     func = configuration_table[s->level].func;
 
-    if ((strategy != s->strategy || func != configuration_table[level].func) &&
-        s->last_flush != -2) {
+    if ((strategy != s->strategy || func != configuration_table[level].func ||
+         hook_flush != Z_NO_FLUSH) && s->last_flush != -2) {
         /* Flush the last buffer: */
-        int err = deflate(strm, Z_BLOCK);
+        int err = deflate(strm, RANK(hook_flush) > RANK(Z_BLOCK) ?
+                          hook_flush : Z_BLOCK);
         if (err == Z_STREAM_ERROR)
             return err;
         if (strm->avail_in || (s->strstart - s->block_start) + s->lookahead)
