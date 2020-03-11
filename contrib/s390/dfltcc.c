@@ -231,31 +231,28 @@ struct dfltcc_state {
 /*
    Compress.
  */
-local inline int dfltcc_are_params_ok(int level,
-                                      uInt window_bits,
-                                      int strategy,
-                                      uLong level_mask);
-local inline int dfltcc_are_params_ok(level, window_bits, strategy, level_mask)
+local inline int dfltcc_can_deflate_with_params(z_streamp strm,
+                                                int level,
+                                                uInt window_bits,
+                                                int strategy);
+local inline int dfltcc_can_deflate_with_params(strm,
+                                                level,
+                                                window_bits,
+                                                strategy)
+    z_streamp strm;
     int level;
     uInt window_bits;
     int strategy;
-    uLong level_mask;
-{
-    return (level_mask & (1 << level)) != 0 &&
-        (window_bits == HB_BITS) &&
-        (strategy == Z_FIXED || strategy == Z_DEFAULT_STRATEGY);
-}
-
-
-int ZLIB_INTERNAL dfltcc_can_deflate(strm)
-    z_streamp strm;
 {
     deflate_state FAR *state = (deflate_state FAR *)strm->state;
     struct dfltcc_state FAR *dfltcc_state = GET_DFLTCC_STATE(state);
 
     /* Unsupported compression settings */
-    if (!dfltcc_are_params_ok(state->level, state->w_bits, state->strategy,
-                              dfltcc_state->level_mask))
+    if ((dfltcc_state->level_mask & (1 << level)) == 0)
+        return 0;
+    if (window_bits != HB_BITS)
+        return 0;
+    if (strategy != Z_FIXED && strategy != Z_DEFAULT_STRATEGY)
         return 0;
 
     /* Unsupported hardware */
@@ -265,6 +262,17 @@ int ZLIB_INTERNAL dfltcc_can_deflate(strm)
         return 0;
 
     return 1;
+}
+
+int ZLIB_INTERNAL dfltcc_can_deflate(strm)
+    z_streamp strm;
+{
+    deflate_state FAR *state = (deflate_state FAR *)strm->state;
+
+    return dfltcc_can_deflate_with_params(strm,
+                                          state->level,
+                                          state->w_bits,
+                                          state->strategy);
 }
 
 local void dfltcc_gdht OF((z_streamp strm));
@@ -804,8 +812,10 @@ int ZLIB_INTERNAL dfltcc_deflate_params(strm, level, strategy)
     struct dfltcc_state FAR *dfltcc_state = GET_DFLTCC_STATE(state);
     struct dfltcc_param_v0 FAR *param = &dfltcc_state->param;
     int could_deflate = dfltcc_can_deflate(strm);
-    int can_deflate = dfltcc_are_params_ok(level, state->w_bits, strategy,
-                                           dfltcc_state->level_mask);
+    int can_deflate = dfltcc_can_deflate_with_params(strm,
+                                                     level,
+                                                     state->w_bits,
+                                                     strategy);
 
     if (can_deflate == could_deflate)
         /* We continue to work in the same mode - no changes needed */
