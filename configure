@@ -822,6 +822,24 @@ EOF
   fi
 fi
 
+# check if we are compiling for s390x and binutils support vector extensions
+cat > $test.c <<EOF
+#if defined(__s390x__)
+asm(".machine z13\n");
+#else
+#error
+#endif
+EOF
+if try $CC -c $CFLAGS $test.c; then
+  CFLAGS="$CFLAGS -DHAVE_S390X_VX"
+  SFLAGS="$SFLAGS -DHAVE_S390X_VX"
+  OBJC="$OBJC crc32le-vx.o"
+  PIC_OBJC="$PIC_OBJC crc32le-vx.lo"
+  echo "Checking for s390x vector extensions... Yes." | tee -a configure.log
+else
+  echo "Checking for s390x vector extensions... No." | tee -a configure.log
+fi
+
 # show the results in the log
 echo >> configure.log
 echo ALL = $ALL >> configure.log

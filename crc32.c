@@ -734,7 +734,11 @@ unsigned long ZEXPORT crc32_z(crc, buf, len)
 #else
 
 /* ========================================================================= */
+#if defined(HAVE_S390X_VX)
+unsigned long local crc32_z_sw(crc, buf, len)
+#else
 unsigned long ZEXPORT crc32_z(crc, buf, len)
+#endif
     unsigned long crc;
     const unsigned char FAR *buf;
     z_size_t len;
@@ -1054,7 +1058,58 @@ unsigned long ZEXPORT crc32_z(crc, buf, len)
     /* Return the CRC, post-conditioned. */
     return crc ^ 0xffffffff;
 }
+#endif
 
+/* =========================================================================
+ * Use s390x vector instructions if available. Vector instructions are
+ * compiled in if binutils support them (even if compiling for older
+ * architecture!), but are used only if vector extensions are detected
+ * at run time.
+ */
+#if defined(HAVE_S390X_VX)
+#include <sys/auxv.h>
+
+local int have_vx;
+
+local void __attribute__((constructor)) init_have_vx()
+{
+    have_vx = !!(getauxval(AT_HWCAP) & HWCAP_S390_VX);
+}
+
+#define VX_MIN_LEN 64
+#define VX_ALIGNMENT 16L
+#define VX_ALIGN_MASK (VX_ALIGNMENT - 1)
+
+unsigned int crc32_le_vgfm_16(unsigned int crc,
+                              unsigned char const *buf,
+                              size_t size);
+
+unsigned long ZEXPORT crc32_z(crc, buf, len)
+    unsigned long crc;
+    const unsigned char FAR *buf;
+    z_size_t len;
+{
+    unsigned long prealign, aligned, remaining;
+
+    if (!have_vx || len < VX_MIN_LEN + VX_ALIGN_MASK)
+        return crc32_z_sw(crc, buf, len);
+
+    if ((unsigned long)buf & VX_ALIGN_MASK) {
+        prealign = VX_ALIGNMENT - ((unsigned long)buf & VX_ALIGN_MASK);
+        len -= prealign;
+        crc = crc32_z_sw(crc, buf, prealign);
+        buf = (void *)((unsigned long)buf + prealign);
+    }
+    aligned = len & ~VX_ALIGN_MASK;
+    remaining = len & VX_ALIGN_MASK;
+
+    crc = crc32_le_vgfm_16(crc ^ 0xffffffff, buf, aligned) ^ 0xffffffff;
+
+    if (remaining)
+        crc = crc32_z_sw(crc, buf + aligned, remaining);
+
+    return crc;
+}
 #endif
 
 /* ========================================================================= */
