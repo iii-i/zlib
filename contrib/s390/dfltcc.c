@@ -878,6 +878,28 @@ int ZLIB_INTERNAL dfltcc_deflate_params(strm, level, strategy, flush)
     return Z_OK;
 }
 
+int ZLIB_INTERNAL dfltcc_deflate_done(strm, flush)
+    z_streamp strm;
+    int flush;
+{
+    deflate_state FAR *state = (deflate_state FAR *)strm->state;
+    struct dfltcc_state FAR *dfltcc_state = GET_DFLTCC_STATE(state);
+    struct dfltcc_param_v0 FAR *param = &dfltcc_state->param;
+
+    /* When deflate(Z_FULL_FLUSH) is called with small avail_out, it might
+     * close the block without resetting the compression state. Detect this
+     * situation and return that deflation is not done.
+     */
+    if (flush == Z_FULL_FLUSH && strm->avail_out == 0)
+        return 0;
+
+    /* Return that deflation is not done if DFLTCC is used and either it
+     * buffered some data (Continuation Flag is set), or has not written EOBS
+     * yet (Block-Continuation Flag is set).
+     */
+    return !dfltcc_can_deflate(strm) || (!param->cf && !param->bcf);
+}
+
 /*
    Preloading history.
 */
