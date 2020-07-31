@@ -647,8 +647,8 @@ int ZEXPORT deflateParams(strm, level, strategy)
     DEFLATE_PARAMS_HOOK(strm, level, strategy, &hook_flush);
     func = configuration_table[s->level].func;
 
-    if ((strategy != s->strategy || func != configuration_table[level].func ||
-         hook_flush != Z_NO_FLUSH) && s->last_flush != -2) {
+    if (((strategy != s->strategy || func != configuration_table[level].func) &&
+         s->last_flush != -2) || hook_flush != Z_NO_FLUSH) {
         /* Flush the last buffer: */
         int flush = RANK(hook_flush) > RANK(Z_BLOCK) ? hook_flush : Z_BLOCK;
         int err = deflate(strm, flush);
