@@ -962,6 +962,7 @@ int ZLIB_INTERNAL dfltcc_deflate_set_dictionary(strm, dictionary, dict_length)
 
     append_history(param, state->window, dictionary, dict_length);
     state->strstart = 1; /* Add FDICT to zlib header */
+    state->block_start = state->strstart; /* Make deflate_stored happy */
     return Z_OK;
 }
 
